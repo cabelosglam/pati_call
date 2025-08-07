@@ -1,0 +1,19 @@
+
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <title>Painel da Pat Glam</title>
+</head>
+<body style="font-family: Arial; max-width: 500px; margin: 60px auto;">
+    <h2>📞 Painel da Pat Glam</h2>
+    <form method="post">
+        <label>Telefone com DDI (ex: +5511999999999):</label><br>
+        <input type="text" name="telefone" style="width: 100%; padding: 10px;" required><br><br>
+        <button type="submit" style="padding: 10px 20px;">Ligar com a Pat Glam</button>
+    </form>
+    {% if status %}
+    <p><strong>{{ status }}</strong></p>
+    {% endif %}
+</body>
+</html>
