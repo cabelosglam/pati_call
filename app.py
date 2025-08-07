@@ -55,22 +55,28 @@ def voice():
 @app.route("/resposta", methods=["POST"])
 def resposta():
     fala_cliente = request.form.get("SpeechResult", "")
-    resposta_pat = gerar_resposta_gpt(fala_cliente)
+    print(f"[DEBUG] Cliente disse: {fala_cliente}")
+
+    if not fala_cliente:
+        resposta_pat = "Hmmm, parece que não consegui te ouvir. Pode repetir, por favor?"
+    else:
+        resposta_pat = gerar_resposta_gpt(fala_cliente)
 
     resp = VoiceResponse()
     gather = Gather(
         input='speech',
-        timeout=5,
+        timeout=7,
         language='pt-BR',
         speech_model='default',
         action='/resposta',
         method='POST',
-        voice='Polly.Brazilian.Portuguese.Female'
+        voice='alice'
     )
     gather.say(resposta_pat, language='pt-BR')
     resp.append(gather)
     resp.say("Acho que não entendi bem. Tenta me contar de novo depois, tá? Beijinhos!", language='pt-BR')
     return Response(str(resp), mimetype='text/xml')
+
 
 def gerar_resposta_gpt(fala_cliente):
     prompt = f"""
