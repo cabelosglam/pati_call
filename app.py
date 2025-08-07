@@ -32,14 +32,35 @@ def home():
 @app.route("/voice", methods=["GET", "POST"])
 def voice():
     resp = VoiceResponse()
+    
+    # Primeira fala — tom mais leve e natural
     resp.say(
-        "Olá, aqui é a Pat Glam da Glam Hair Brand! "
-        "Estou ligando para saber se você é cabeleireiro ou deseja aprender sobre nosso método de fita adesiva.",
+        "Oiê! Aqui é a Pat Glam, da Glam Hair Brand.",
         voice='alice',
         language='pt-BR'
     )
-    resp.record(max_length=60, transcribe=False, recording_status_callback="/recording")
-    resp.say("Obrigada, até mais!", voice='alice', language='pt-BR')
+    
+    # Segunda parte — direta ao ponto e com vocabulário mais informal
+    resp.say(
+        "Tô passando rapidinho pra saber: você já trabalha com cabelo ou quer aprender um método top de fita adesiva que tá bombando nos salões mais chiques?",
+        voice='alice',
+        language='pt-BR'
+    )
+
+    # Grava a resposta da pessoa
+    resp.record(
+        max_length=60,
+        transcribe=False,
+        recording_status_callback="/recording"
+    )
+
+    # Encerramento — carinhoso e com um toque final
+    resp.say(
+        "Valeu por responder, viu? Beijo da Pat Glam e até logo!",
+        voice='alice',
+        language='pt-BR'
+    )
+
     return Response(str(resp), mimetype="text/xml")
 
 if __name__ == "__main__":
