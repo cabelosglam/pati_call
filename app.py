@@ -1,81 +1,109 @@
 import os
-from flask import Flask, request, Response
+from flask import Flask, request, render_template
+from twilio.rest import Client
 from twilio.twiml.voice_response import VoiceResponse, Gather
-from openai import OpenAI
+import openai
 from dotenv import load_dotenv
 
 load_dotenv()
 
+# Ambiente
 app = Flask(__name__)
-
-# Configurações
-VOICE_ID = os.environ.get("TTS_VOICE", "pt-BR-Chirp3-HD-Aoede")
+TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
+TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
+TWILIO_FROM_NUMBER = os.environ.get("TWILIO_FROM_NUMBER")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
-client_openai = OpenAI(api_key=OPENAI_API_KEY)
+BASE_URL = os.environ.get("BASE_URL")  # Ex: https://patglam.onrender.com
 
-# Memória curta por chamada (em memória local)
-call_memory = {}
+openai.api_key = OPENAI_API_KEY
+client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 
-# Prompt base com instruções da Pat Glam
-PROMPT_INICIAL = """
-Você é a Pat Glam, atendente virtual da Glam Hair Brand.
-Fale como uma mulher brasileira simpática, estilosa, segura, divertida e profissional.
-Sempre que o cliente falar algo, repita de forma natural para confirmar, como:
-"Ah, entendi. Você está em Goiânia, certo?"
+# Página principal
+@app.route("/", methods=["GET", "POST"])
+def home():
+    status = None
+    if request.method == "POST":
+        telefone = request.form["telefone"]
+        try:
+            call = client.calls.create(
+                to=telefone,
+                from_=TWILIO_FROM_NUMBER,
+                url=f"{BASE_URL}/voice"  # Corrigido: URL absoluta
+            )
+            status = f"Ligação iniciada para {telefone}. SID: {call.sid}"
+        except Exception as e:
+            status = f"Erro ao iniciar ligação: {str(e)}"
+    return render_template("index.html", status=status)
 
-Se a pessoa perguntar:
-
-- "Vocês vendem para cliente final?" → Responda: "Ahhh, não vendemos para cliente final, tá? Nossos apliques são exclusivos para profissionais credenciados Glam. Mas posso te indicar um!"
-- "Vocês enviam para o Brasil todo?" → Responda: "Com certeza! A Glam envia para todo o Brasil com frete super seguro."
-- "Quando a Glam foi criada?" → Responda: "A Glam nasceu em 2012 com o propósito de elevar o padrão das extensões capilares. Somos especialistas em fita adesiva premium."
-
-Se a pessoa não falar nada, incentive com frases como:
-"Pode me perguntar o que quiser, viu? Tô aqui pra te ajudar."
-"""
-
-def gerar_resposta(texto_usuario, sid):
-    memoria = call_memory.get(sid, "")
-    prompt = PROMPT_INICIAL + "\nHistórico:\n" + memoria + f"\nUsuário: {texto_usuario}\nPat Glam:"
-    
-    resposta = client_openai.chat.completions.create(
-        model="gpt-4o",
-        messages=[
-            {"role": "system", "content": PROMPT_INICIAL},
-            {"role": "user", "content": texto_usuario}
-        ],
-        max_tokens=200,
-        temperature=0.7,
-    )
-
-    texto_resposta = resposta.choices[0].message.content.strip()
-
-    # Atualiza memória curta
-    call_memory[sid] = memoria + f"\nUsuário: {texto_usuario}\nPat Glam: {texto_resposta}"
-    return texto_resposta
-
+# Rota de voz inicial
 @app.route("/voice", methods=["POST"])
 def voice():
-    sid = request.form.get("CallSid")
-    speech_result = request.form.get("SpeechResult", "").strip()
     response = VoiceResponse()
+    gather = Gather(input="speech", action="/processa_resposta", method="POST", timeout=5)
+    gather.say(
+        "Oiê! Aqui é a Pat Glam, da Glam Hair Brand. "
+        "Antes de tudo, me conta: você é profissional da beleza ou quer aprender nosso método exclusivo de fita adesiva?",
+        voice="Polly", language="pt-BR"
+    )
+    response.append(gather)
+    response.redirect("/voice")  # Repete caso não responda
+    return str(response)
 
-    if not speech_result:
-        gather = Gather(input="speech", timeout=3, speech_timeout="auto", action="/voice", method="POST")
-        gather.say("Oi, aqui é a Pat Glam. Seja bem-vinda! Me conta, o que você gostaria de saber?", language="pt-BR", voice=VOICE_ID)
+# Processa a resposta
+@app.route("/processa_resposta", methods=["POST"])
+def processa_resposta():
+    resposta_usuario = request.form.get("SpeechResult", "")
+    resposta_usuario = resposta_usuario.lower()
+
+    response = VoiceResponse()
+    print(f"Usuário disse: {resposta_usuario}")
+
+    if "cliente" in resposta_usuario:
+        response.say("A Glam trabalha exclusivamente com profissionais. Mas se você ama cabelo incrível, peça para sua cabeleireira usar Glam!", voice="Polly", language="pt-BR")
+    elif "profissional" in resposta_usuario or "beleza" in resposta_usuario:
+        gather = Gather(input="speech", action="/cidade", method="POST", timeout=5)
+        gather.say("Amei saber! Em qual cidade você atende?", voice="Polly", language="pt-BR")
         response.append(gather)
-        response.redirect("/voice")
     else:
-        resposta_pat = gerar_resposta(speech_result, sid)
-        gather = Gather(input="speech", timeout=3, speech_timeout="auto", action="/voice", method="POST")
-        gather.say(resposta_pat, language="pt-BR", voice=VOICE_ID)
-        response.append(gather)
+        response.say("Desculpa, não entendi. Você pode repetir?", voice="Polly", language="pt-BR")
         response.redirect("/voice")
+    return str(response)
 
-    return Response(str(response), mimetype="text/xml")
+# Pega cidade
+@app.route("/cidade", methods=["POST"])
+def cidade():
+    cidade = request.form.get("SpeechResult", "")
+    cidade = cidade.strip().capitalize()
 
-@app.route("/", methods=["GET"])
-def home():
-    return "Pat Glam está rodando com inteligência conversacional."
+    response = VoiceResponse()
+    gather = Gather(input="speech", action=f"/confirm_metodo?cidade={cidade}", method="POST", timeout=5)
+    gather.say(f"Você atende em {cidade}, certo? Agora me conta: qual método de alongamento usa hoje?", voice="Polly", language="pt-BR")
+    response.append(gather)
+    return str(response)
+
+# Confirma método
+@app.route("/confirm_metodo", methods=["POST"])
+def confirm_metodo():
+    metodo = request.form.get("SpeechResult", "")
+    cidade = request.args.get("cidade", "")
+    metodo = metodo.strip().lower()
+
+    response = VoiceResponse()
+    gather = Gather(input="speech", action=f"/finaliza?cidade={cidade}&metodo={metodo}", method="POST", timeout=5)
+    gather.say(f"Certo, então você está em {cidade} e usa o método {metodo}, é isso? Agora me fala seu arroba no Instagram pra equipe te achar!", voice="Polly", language="pt-BR")
+    response.append(gather)
+    return str(response)
+
+# Finaliza e envia WhatsApp
+@app.route("/finaliza", methods=["POST"])
+def finaliza():
+    instagram = request.form.get("SpeechResult", "")
+    cidade = request.args.get("cidade", "")
+    metodo = request.args.get("metodo", "")
+
+    response = VoiceResponse()
+    response.say(f"Perfeito! Já pedi pra equipe Glam te chamar no WhatsApp. Glamour é essencial — nos vemos em breve!", voice="Polly", language="pt-BR")
+    return str(response)
 
 if __name__ == "__main__":
     app.run(debug=True)
