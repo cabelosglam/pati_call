@@ -245,6 +245,18 @@ AUTO_QUESTIONS = [
     "Você já trabalha com fita adesiva ou quer começar agora com a Glam?",
 ]
 
+def _slot_from_auto(q: str) -> str | None:
+    if not q:
+        return None
+    ql = q.lower()
+    if "profissional" in ql or "cliente final" in ql:
+        return "profile"
+    if "qual cidade" in ql or "cidade" in ql:
+        return "city"
+    if "fita adesiva" in ql or "experi" in ql:
+        return "experience"
+    return None
+
 FAQ_FACTS = (
     "A Glam vende apenas para profissionais credenciados; a cliente final deve indicar a marca à sua cabeleireira. "
     "Enviamos para todo o Brasil. Não passamos preços em ligações; o credenciamento libera catálogo. "
@@ -271,10 +283,28 @@ def plan_turn(user_text: str, sess: dict) -> dict:
 
     # Decide se ainda cabe uma pergunta automática
     next_auto = AUTO_QUESTIONS[auto_index] if auto_index < len(AUTO_QUESTIONS) else None
+    next_slot = _slot_from_auto(next_auto or "")
 
-    # Fast path: sem LLM disponível, segue script suave
+    # Fast path: sem LLM disponível, seguimos capturando os slots básicos
     if not OPENAI_OK:
-        reply = (next_auto or "Pode me contar um pouco sobre seu salão?")
+        ut = (user_text or "").strip()
+        if ut and next_slot == "city":
+            data["city"] = ut
+            auto_index += 1
+        elif ut and next_slot == "experience":
+            data["experience"] = ut
+            auto_index += 1
+        # profile via DTMF já é tratado fora; se vier por voz, deixamos para próxima
+
+        sess["data"] = data
+        sess["auto_index"] = auto_index
+
+        # Próxima fala
+        if auto_index < len(AUTO_QUESTIONS):
+            reply = AUTO_QUESTIONS[auto_index]
+        else:
+            # Depois das 3 básicas, fazemos um fechamento leve
+            reply = "Perfeito! Quer me passar o arroba do Instagram do seu salão pra eu te marcar na avaliação?"
         return {"reply": reply, "end": False}
 
     messages = [
