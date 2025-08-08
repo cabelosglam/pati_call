@@ -1,3 +1,4 @@
+
 import os
 import json
 from functools import wraps
@@ -75,6 +76,7 @@ else:
 # === Clients ===
 twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
 
 # === Keys/helpers for conversation memory ===
 def conv_key(call_sid: str) -> str:
@@ -181,6 +183,7 @@ def voice():
         hints="fita adesiva, extensão, curso, comprar, preço, salão, Goiânia, Brasileira do Sul, cabelo russo, Glam",
         timeout=8,
         speech_timeout="auto",
+        actionOnEmptyResult=True,
     )
     # Polly Camila (pt-BR) -> voz mais natural
     gather.say(
@@ -216,6 +219,7 @@ def resposta():
         hints="fita adesiva, extensão, curso, comprar, preço, salão, Goiânia, Brasileira do Sul, cabelo russo, Glam",
         timeout=8,
         speech_timeout="auto",
+        actionOnEmptyResult=True,
     )
     gather.say(resposta_pat, language="pt-BR", voice="Polly.Camila")
     resp.append(gather)
@@ -254,6 +258,7 @@ def status_callback():
 
     return ("", 204)
 
+
 def gerar_resposta_gpt(fala_cliente: str, call_sid: str) -> str:
     try:
         if not fala_cliente.strip():
@@ -265,12 +270,23 @@ def gerar_resposta_gpt(fala_cliente: str, call_sid: str) -> str:
         messages.extend(history)
         messages.append({"role": "user", "content": f"Pessoa disse: {fala_cliente}"})
 
-        completion = openai_client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=messages,
-            temperature=0.7,
-            max_tokens=180,
-        )
+        # 1ª tentativa com o modelo configurado
+        try:
+            completion = openai_client.chat.completions.create(
+                model=OPENAI_MODEL,
+                messages=messages,
+                temperature=0.7,
+                max_tokens=180,
+            )
+        except Exception as e1:
+            print(f"[OPENAI WARN] Falha com modelo {OPENAI_MODEL}: {e1}. Tentando fallback gpt-4o.")
+            completion = openai_client.chat.completions.create(
+                model="gpt-4o",
+                messages=messages,
+                temperature=0.7,
+                max_tokens=180,
+            )
+
         resposta = (completion.choices[0].message.content or "").strip()
 
         append_conv(call_sid, "user", fala_cliente)
@@ -280,6 +296,7 @@ def gerar_resposta_gpt(fala_cliente: str, call_sid: str) -> str:
     except Exception as e:
         print(f"[OPENAI ERROR] {e}")
         return "Desculpa, tive um pequeno deslize técnico. Pode repetir pra mim, por favor?"
+
 
 def summarize_history(history, call_sid: str, duration: str, from_number: str, to_number: str) -> str:
     try:
