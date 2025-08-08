@@ -1,3 +1,5 @@
+VOICE_ID = os.environ.get("TTS_VOICE", "pt-BR-Chirp3-HD-Aoede")
+
 
 import os
 import json
@@ -287,7 +289,7 @@ def speak_and_gather(text: str, action_url: str) -> Response:
         input="speech dtmf",
         action=action_url,
         method="POST",
-        language="pt-BR", voice="pt-BR-Chirp3-HD-Aoede",
+        language="pt-BR", voice=VOICE_ID,
         hints="fita adesiva, extensão, curso, comprar, preço, salão, Goiânia, Brasileira do Sul, cabelo russo, Glam",
         timeout=8,
         speech_timeout="auto",
@@ -298,7 +300,7 @@ def speak_and_gather(text: str, action_url: str) -> Response:
         partial_result_callback_method="POST",
         num_digits=1,
     )
-    gather.say(ssml_pat(glam_tone(text)), language="pt-BR", voice="pt-BR-Chirp3-HD-Aoede", voice="pt-BR-Chirp3-HD-Aoede")
+    gather.say(ssml_pat(glam_tone(text)), language="pt-BR", voice=VOICE_ID)
     resp.append(gather)
     return Response(str(resp), mimetype="text/xml")
 
@@ -333,7 +335,7 @@ def voice():
     append_conv(call_sid, "assistant", "Saudação inicial.")
     intro = ("Oiê! Aqui é a Pat Glam, da Glam Hair Brand.")
     resp = VoiceResponse()
-    resp.say(ssml_pat(glam_tone(intro)), language="pt-BR", voice="pt-BR-Chirp3-HD-Aoede", voice="pt-BR-Chirp3-HD-Aoede")
+    resp.say(ssml_pat(glam_tone(intro)), language="pt-BR", voice=VOICE_ID)
     # primeira pergunta
     return speak_and_gather(first_prompt(), abs_url("/resposta"))
 
@@ -386,9 +388,9 @@ def resposta():
             append_conv(call_sid, "assistant", msg)
             # fecha conversa educadamente
             resp = VoiceResponse()
-            resp.say(ssml_pat(glam_tone(msg)), language="pt-BR", voice="pt-BR-Chirp3-HD-Aoede", voice="pt-BR-Chirp3-HD-Aoede")
+            resp.say(ssml_pat(glam_tone(msg)), language="pt-BR", voice=VOICE_ID)
             resp.say(ssml_pat("Obrigada pelo carinho! Se quiser, peça para sua cabeleireira falar com a Glam. "
-                              "Beijos!"), language="pt-BR", voice="pt-BR-Chirp3-HD-Aoede", voice="pt-BR-Chirp3-HD-Aoede")
+                              "Beijos!"), language="pt-BR", voice=VOICE_ID)
             resp.hangup()
             return Response(str(resp), mimetype="text/xml")
 
@@ -461,13 +463,13 @@ def resposta():
         msg = wrap_up(data)
         append_conv(call_sid, "assistant", msg)
         resp = VoiceResponse()
-        resp.say(ssml_pat(glam_tone(msg)), language="pt-BR", voice="pt-BR-Chirp3-HD-Aoede", voice="pt-BR-Chirp3-HD-Aoede")
+        resp.say(ssml_pat(glam_tone(msg)), language="pt-BR", voice=VOICE_ID)
         # opcional: uma última coleta curta
         gather = Gather(
             input="speech dtmf",
             action=abs_url("/wrap_followup"),
             method="POST",
-            language="pt-BR", voice="pt-BR-Chirp3-HD-Aoede",
+            language="pt-BR", voice=VOICE_ID,
             timeout=6,
             speech_timeout="auto",
             speech_model="phone_call",
@@ -475,9 +477,9 @@ def resposta():
             num_digits=1
         )
         gather.say(ssml_pat("Se precisar de algo agora, pode dizer. Se não, eu já vou te deixar brilhar!"),
-                   language="pt-BR", voice="pt-BR-Chirp3-HD-Aoede", voice="pt-BR-Chirp3-HD-Aoede")
+                   language="pt-BR", voice=VOICE_ID)
         resp.append(gather)
-        resp.say(ssml_pat("Beijinhos e até já!"), language="pt-BR", voice="pt-BR-Chirp3-HD-Aoede", voice="pt-BR-Chirp3-HD-Aoede")
+        resp.say(ssml_pat("Beijinhos e até já!"), language="pt-BR", voice=VOICE_ID)
         return Response(str(resp), mimetype="text/xml")
 
     else:
@@ -491,7 +493,7 @@ def wrap_followup():
     # qualquer coisa aqui encerra com carinho
     resp = VoiceResponse()
     resp.say(ssml_pat("Obrigada! Foi um prazer falar com você. Glamour é essencial — até breve!"),
-             language="pt-BR", voice="pt-BR-Chirp3-HD-Aoede", voice="pt-BR-Chirp3-HD-Aoede")
+             language="pt-BR", voice=VOICE_ID)
     resp.hangup()
     return Response(str(resp), mimetype="text/xml")
 
