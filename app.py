@@ -1,4 +1,3 @@
-VOICE_ID = os.environ.get("TTS_VOICE", "pt-BR-Chirp3-HD-Aoede")
 
 
 import os
@@ -13,6 +12,8 @@ from twilio.request_validator import RequestValidator
 from twilio.twiml.voice_response import VoiceResponse, Gather
 from dotenv import load_dotenv
 from openai import OpenAI
+
+VOICE_ID = os.environ.get("TTS_VOICE", "pt-BR-Chirp3-HD-Aoede")
 
 # Optional Redis (fallback to in-memory)
 try:
