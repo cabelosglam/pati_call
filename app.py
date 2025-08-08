@@ -176,7 +176,7 @@ def voice():
     """Primeira pergunta + coleta de voz (voz mais natural via Polly)."""
     resp = VoiceResponse()
     gather = Gather(
-        input="speech",
+        input="speech dtmf",
         action=url_for("resposta", _external=True, _scheme="https"),
         method="POST",
         language="pt-BR",
@@ -184,6 +184,9 @@ def voice():
         timeout=8,
         speech_timeout="auto",
         actionOnEmptyResult=True,
+        speech_model="phone_call",
+        partial_result_callback=url_for("partial", _external=True, _scheme="https"),
+        partial_result_callback_method="POST",
     )
     # Polly Camila (pt-BR) -> voz mais natural
     gather.say(
@@ -201,18 +204,60 @@ def voice():
     )
     return Response(str(resp), mimetype="text/xml")
 
+
 @app.route("/resposta", methods=["POST"])
 @require_twilio_auth
 def resposta():
     fala_cliente = request.form.get("SpeechResult", "") or ""
+    # DTMF fallback
+    digits = request.form.get("Digits", "") or ""
     call_sid = request.form.get("CallSid", "unknown")
-    print(f"[DEBUG] CallSid={call_sid} | Cliente disse: {fala_cliente}")
 
+    if digits and not fala_cliente:
+        if digits == "1":
+            fala_cliente = "Sou profissional da beleza."
+        elif digits == "2":
+            fala_cliente = "Sou cliente final."
+        else:
+            fala_cliente = f"Digitei {digits}."
+
+    print(f"[DEBUG] CallSid={call_sid} | SpeechResult='{fala_cliente}' | Digits='{digits}'")
+
+    # 1) Se não ouviu nada, pede pra repetir ou usar DTMF
+    if not fala_cliente.strip():
+        resp = VoiceResponse()
+        resp.say(
+            "Não captei sua fala. Se preferir, pressione 1 se você é profissional da beleza, ou 2 se é cliente final.",
+            language="pt-BR",
+            voice="Polly.Camila"
+        )
+        # novo gather para tentar de novo
+        gather = Gather(
+            input="speech dtmf",
+            action=url_for("resposta", _external=True, _scheme="https"),
+            method="POST",
+            language="pt-BR",
+            timeout=8,
+            speech_timeout="auto",
+            actionOnEmptyResult=True,
+            speech_model="phone_call",
+            partial_result_callback=url_for("partial", _external=True, _scheme="https"),
+            partial_result_callback_method="POST",
+        )
+        resp.append(gather)
+        return Response(str(resp), mimetype="text/xml")
+
+    # 2) Repete o que entendeu (eco) para validação humana
+    resp_text = f"Eu ouvi: {fala_cliente}."
     resposta_pat = gerar_resposta_gpt(fala_cliente, call_sid)
 
     resp = VoiceResponse()
+    resp.say(resp_text, language="pt-BR", voice="Polly.Camila")
+    resp.say(resposta_pat, language="pt-BR", voice="Polly.Camila")
+
+    # 3) Abre novo turno
     gather = Gather(
-        input="speech",
+        input="speech dtmf",
         action=url_for("resposta", _external=True, _scheme="https"),
         method="POST",
         language="pt-BR",
@@ -220,17 +265,19 @@ def resposta():
         timeout=8,
         speech_timeout="auto",
         actionOnEmptyResult=True,
+        speech_model="phone_call",
+        partial_result_callback=url_for("partial", _external=True, _scheme="https"),
+        partial_result_callback_method="POST",
     )
-    gather.say(resposta_pat, language="pt-BR", voice="Polly.Camila")
     resp.append(gather)
 
+    # fallback se a pessoa não responder
     resp.say(
-        "Acho que não entendi bem agora. Podemos continuar em outro momento. Beijinhos!",
+        "Se precisar, posso te chamar de volta depois. Beijinhos!",
         language="pt-BR",
         voice="Polly.Camila"
     )
     return Response(str(resp), mimetype="text/xml")
-
 @app.route("/status_callback", methods=["POST"])
 @require_twilio_auth
 def status_callback():
@@ -340,7 +387,15 @@ Conversa:
         return summary or f"CallSid: {call_sid}\n(Conversa vazia para resumir)"
     except Exception as e:
         print(f"[OPENAI SUMMARY ERROR] {e}")
-        return f"CallSid: {call_sid}\nResumo indisponível (erro ao gerar)."
+        # Fallback: retorna pelo menos a transcrição crua
+        raw_lines = []
+        for m in history:
+            who = "Cliente" if m.get("role") == "user" else "Pat"
+            content = (m.get("content") or "").strip()
+            if content:
+                raw_lines.append(f"{who}: {content}")
+        raw_text = "\n".join(raw_lines) if raw_lines else "(sem histórico)"
+        return f"CallSid: {call_sid}\nResumo indisponível (erro ao gerar).\n\nTranscrição bruta:\n{raw_text}"
 
 def send_summary(markdown_text: str) -> None:
     if not EMAIL_HOST or not EMAIL_USER or not EMAIL_PASS or not EMAIL_FROM or not EMAIL_TO:
