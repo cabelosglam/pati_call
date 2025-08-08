@@ -13,7 +13,7 @@ from twilio.twiml.voice_response import VoiceResponse, Gather
 from dotenv import load_dotenv
 from openai import OpenAI
 
-VOICE_ID = os.environ.get("TTS_VOICE", "pt-BR-Chirp3-HD-Aoede")
+VOICE_ID = os.environ.get("TTS_VOICE", "pt-BR-Chirp3-HD-Kore")
 
 # Optional Redis (fallback to in-memory)
 try:
@@ -241,29 +241,29 @@ def glam_tone(base_text: str) -> str:
 
 # === Dialogue State Machine ===
 def first_prompt():
-    return ("Você é profissional da beleza ou uma Patricia Final curiosa? "
+    return ("Você é profissional da beleza ou você é consumidora final? "
             "Se preferir, tecle 1 para profissional, ou 2 para cliente final.")
 
 def ask_city():
-    return "Atende em qual cidade, amor? Assim eu anoto com glitter dourado aqui."
+    return "Você atende em qual cidade?"
 
 def ask_experience():
-    return "E você já trabalha com extensões? Qual método usa hoje no salão?"
+    return "Já trabalha com extensões, no método de fita adesiva?"
 
 def ask_instagram():
-    return "Me passa o arroba do Instagram do salão ou o seu, por favor."
+    return "Me passa o arroba do Instagram do seu salão, por favor."
 
 def ask_whatsapp():
-    return ("Posso pedir para nossa equipe te chamar no WhatsApp para credenciar, "
-            "enviar catálogo e detalhes da Masterclass? Diga 'sim' ou 'não'. "
+    return ("Posso pedir para a nossa equipe te chamar no WhatsApp para credenciar, "
+            "enviar catálogo e mais detalhes? Diga 'sim' ou 'não'. "
             "Se preferir, tecle 1 para sim, 2 para não.")
 
 def wrap_up(data: dict):
     city = data.get("city") or "sua cidade"
     exp = data.get("experience") or "seu método"
     insta = data.get("instagram") or "seu Instagram"
-    thanks = (f"Perfeito, Patrícia poderosa! Anotei: cidade {city}, experiência {exp}, Insta {insta}. "
-              "Glamour é essencial — nos vemos em breve! Posso te ajudar em mais alguma coisa?")
+    thanks = (f"Perfeito! Anotei: cidade {city}, experiência {exp}, Insta {insta}. "
+              "Nos vemos em breve! Posso te ajudar em mais alguma coisa?")
     return thanks
 
 def next_state(current: str, profile: str=None) -> str:
@@ -280,8 +280,8 @@ def next_state(current: str, profile: str=None) -> str:
     return "wrap"
 
 def handle_final_flow() -> str:
-    return ("Ah, então você é uma Patrícia Final — das que só aceitam o melhor, né? 💁‍♀️ "
-            "A Glam vende apenas para profissionais credenciados. Indica nosso método para sua cabeleireira "
+    return ("Ah, então você é uma cliente Final, daquelas que só aceitam o melhor, né? 💁‍♀️ "
+            "A Glam vende apenas para profissionais credenciados. Indique nosso método para sua cabeleireira "
             "e acompanha a gente no Instagram pra mais dicas e brilho!")
 
 def speak_and_gather(text: str, action_url: str) -> Response:
