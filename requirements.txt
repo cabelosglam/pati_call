@@ -1,4 +1,6 @@
-Flask
-twilio
-openai
-python-dotenv
+Flask>=3.0.0
+twilio>=9.0.0
+python-dotenv>=1.0.1
+openai>=1.40.0
+gunicorn>=22.0.0
+redis>=5.0.0
