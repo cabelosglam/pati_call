@@ -41,9 +41,13 @@ def voice():
     gather = Gather(
         input="speech dtmf",
         timeout=12,                 # mais tempo pro cliente responder
-        speech_timeout="auto",      # encerra ao detectar pausa
+        speech_timeout="auto",
+        action_on_empty_result=True,
+        partial_result_callback=url_for("partial", _external=True, _scheme="https"),
+        partial_result_callback_method="POST",      # encerra ao detectar pausa
         language="pt-BR",
-        action=url_for('resposta', _external=True, _scheme='https'),
+        action=url_for('resposta', _external=True, _scheme='https',
+        speech_model="phone_call"),
         method="POST",
         hints="fita adesiva,extensão,curso,comprar,preço,salão,Goiânia,Brasileira do Sul,cabelo russo"
     )
@@ -131,3 +135,14 @@ Resposta da Pat:
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
+
+@app.route("/partial", methods=["POST"])
+def partial():
+    call_sid = request.form.get("CallSid", "unknown")
+    partial_text = request.form.get("UnstableSpeechResult") or request.form.get("PartialResult") or ""
+    stability = request.form.get("Stability") or ""
+    confidence = request.form.get("Confidence") or ""
+    print(f"[PARTIAL] CallSid={call_sid} partial='{partial_text}' stability={stability} conf={confidence}")
+    return ("", 204)
+
