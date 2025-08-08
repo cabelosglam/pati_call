@@ -46,6 +46,7 @@ TWILIO_VALIDATE_SIGNATURE = os.environ.get("TWILIO_VALIDATE_SIGNATURE", "true").
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o")
 USE_GPT_TONE = os.environ.get("USE_GPT_TONE", "true").lower() == "true"
+PLANNER_MODEL = os.environ.get("PLANNER_MODEL", "gpt-4o-mini")
 
 EMAIL_HOST = os.environ.get("EMAIL_HOST")
 EMAIL_PORT = int(os.environ.get("EMAIL_PORT", "587"))
@@ -102,6 +103,7 @@ else:
 # === Clients ===
 twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
+print(f"[OPENAI] planner={PLANNER_MODEL} | tone={OPENAI_MODEL} | tone_enabled={USE_GPT_TONE}")
 
 # === Conversation + Session helpers ===
 def conv_key(call_sid: str) -> str:
@@ -186,6 +188,20 @@ def require_twilio_auth(f):
             return abort(403, description="Invalid Twilio signature.")
         return f(*args, **kwargs)
     return wrapper
+
+# === JSON helper ===
+
+def _extract_json(text: str) -> str:
+    if not text:
+        return "{}"
+    try:
+        start = text.find("{")
+        end = text.rfind("}")
+        if start != -1 and end != -1 and start < end:
+            return text[start:end+1]
+    except Exception:
+        pass
+    return "{}"
 
 # === Brand tone ===
 def glam_tone(base_text: str) -> str:
