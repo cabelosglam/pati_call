@@ -61,6 +61,10 @@ EMAIL_TO = os.environ.get("EMAIL_TO", "cabelosglam@gmail.com")
 
 REDIS_URL = os.environ.get("REDIS_URL", "")
 
+# WhatsApp autosend (deixe false por enquanto; ativaremos depois)
+WHATSAPP_AUTOSEND = os.environ.get("WHATSAPP_AUTOSEND", "false").lower() == "true"
+TWILIO_WHATSAPP_FROM = os.environ.get("TWILIO_WHATSAPP_FROM")  # e.g., whatsapp:+14155238886
+
 # === HELPERS ===
 def abs_url(path: str) -> str:
     if not PUBLIC_BASE_URL:
@@ -202,7 +206,10 @@ def looks_like_instagram(text: str) -> str:
     if not t:
         return ""
     t = t.replace("arroba","@").replace(" ", "").lower()
-    if not t.startswith("@"):
+    if not t.startswith("@") and "@" in t:
+        # already has @ somewhere
+        pass
+    elif not t.startswith("@"):
         t = "@" + t
     return t
 
@@ -274,16 +281,13 @@ def handle_final_flow() -> str:
             "A Glam vende apenas para profissionais credenciados. Indica nosso método para sua cabeleireira "
             "e acompanha a gente no Instagram pra mais dicas e brilho!")
 
-def speak_and_gather(text: str, action_url: str, call_sid: str=None) -> Response:
-    # loga no histórico
-    if call_sid:
-        append_conv(call_sid, "assistant", text)
+def speak_and_gather(text: str, action_url: str) -> Response:
     resp = VoiceResponse()
     gather = Gather(
         input="speech dtmf",
         action=action_url,
         method="POST",
-        language="pt-BR",
+        language="pt-BR", voice="pt-BR-Chirp3-HD-Aoede",
         hints="fita adesiva, extensão, curso, comprar, preço, salão, Goiânia, Brasileira do Sul, cabelo russo, Glam",
         timeout=8,
         speech_timeout="auto",
@@ -294,7 +298,7 @@ def speak_and_gather(text: str, action_url: str, call_sid: str=None) -> Response
         partial_result_callback_method="POST",
         num_digits=1,
     )
-    gather.say(ssml_pat(glam_tone(text)), language="pt-BR")
+    gather.say(ssml_pat(glam_tone(text)), language="pt-BR", voice="pt-BR-Chirp3-HD-Aoede", voice="pt-BR-Chirp3-HD-Aoede")
     resp.append(gather)
     return Response(str(resp), mimetype="text/xml")
 
@@ -322,14 +326,16 @@ def home():
 @app.route("/voice", methods=["GET", "POST"])
 @require_twilio_auth
 def voice():
+    # inicia estado
     call_sid = request.form.get("CallSid", "unknown") or "unknown"
     sess = {"state": "classify", "data": {}, "wa_sent": False}
     save_session(call_sid, sess)
     append_conv(call_sid, "assistant", "Saudação inicial.")
     intro = ("Oiê! Aqui é a Pat Glam, da Glam Hair Brand.")
     resp = VoiceResponse()
-    resp.say(ssml_pat(glam_tone(intro)), language="pt-BR")
-    return speak_and_gather(first_prompt(), abs_url("/resposta"), call_sid=call_sid)
+    resp.say(ssml_pat(glam_tone(intro)), language="pt-BR", voice="pt-BR-Chirp3-HD-Aoede", voice="pt-BR-Chirp3-HD-Aoede")
+    # primeira pergunta
+    return speak_and_gather(first_prompt(), abs_url("/resposta"))
 
 @app.route("/resposta", methods=["POST"])
 @require_twilio_auth
@@ -339,6 +345,16 @@ def resposta():
     digits = (request.form.get("Digits", "") or "").strip()
     confidence = request.form.get("Confidence", "") or ""
 
+    # mapear DTMF
+    if digits == "1" and get_session(call_sid).get("state") in ["classify","ask_whatsapp"]:
+        # classificar como pro ou consentir no WA, trataremos adiante
+        pass
+    elif digits == "2" and get_session(call_sid).get("state") in ["classify","ask_whatsapp"]:
+        pass
+
+    print(f"[DEBUG] CallSid={call_sid} | SpeechResult={speech!r} | Confidence={confidence} | Digits={digits!r}")
+
+    # eco no histórico para o resumo
     if speech:
         append_conv(call_sid, "user", speech)
 
@@ -346,19 +362,19 @@ def resposta():
     state = sess.get("state", "classify")
     data = sess.get("data", {})
 
-    print(f"[DEBUG] CallSid={call_sid} | State={state} | SpeechResult={speech!r} | Confidence={confidence} | Digits={digits!r}")
-
+    # --- state handlers ---
     if state == "classify":
         profile = None
         t = (speech or "").lower()
-        if digits == "1" or "profiss" in t or "cabeleireir" in t or "salão" in t or "salao" in t:
+        if digits == "1" or "profiss" in t or "cabeleireir" in t or "salão" in t:
             profile = "pro"
         elif digits == "2" or "cliente" in t or "final" in t:
             profile = "final"
 
         if profile is None:
+            # repete a pergunta
             return speak_and_gather("Não peguei. Você é profissional (tecle 1) ou cliente final (tecle 2)?",
-                                    abs_url("/resposta"), call_sid=call_sid)
+                                    abs_url("/resposta"))
 
         data["profile"] = profile
         sess["state"] = next_state("classify", profile)
@@ -368,49 +384,45 @@ def resposta():
         if profile == "final":
             msg = handle_final_flow()
             append_conv(call_sid, "assistant", msg)
+            # fecha conversa educadamente
             resp = VoiceResponse()
-            resp.say(ssml_pat(glam_tone(msg)), language="pt-BR")
+            resp.say(ssml_pat(glam_tone(msg)), language="pt-BR", voice="pt-BR-Chirp3-HD-Aoede", voice="pt-BR-Chirp3-HD-Aoede")
             resp.say(ssml_pat("Obrigada pelo carinho! Se quiser, peça para sua cabeleireira falar com a Glam. "
-                              "Beijos!"), language="pt-BR")
+                              "Beijos!"), language="pt-BR", voice="pt-BR-Chirp3-HD-Aoede", voice="pt-BR-Chirp3-HD-Aoede")
             resp.hangup()
             return Response(str(resp), mimetype="text/xml")
 
-        # Confirma perfil + segue para cidade
-        confirm = "Então você é profissional da beleza, né?"
-        return speak_and_gather(f"{confirm} {ask_city()}", abs_url("/resposta"), call_sid=call_sid)
+        # profissional
+        return speak_and_gather(ask_city(), abs_url("/resposta"))
 
     elif state == "ask_city":
         if not speech:
-            return speak_and_gather("Não captei a cidade. Diz pra mim qual é?", abs_url("/resposta"), call_sid=call_sid)
+            return speak_and_gather("Não captei a cidade. Diz pra mim qual é?", abs_url("/resposta"))
         data["city"] = speech
         sess["state"] = next_state("ask_city")
         sess["data"] = data
         save_session(call_sid, sess)
-        confirm = f"Você atende em {speech}, certo?"
-        return speak_and_gather(f"{confirm} {ask_experience()}", abs_url("/resposta"), call_sid=call_sid)
+        return speak_and_gather(ask_experience(), abs_url("/resposta"))
 
     elif state == "ask_experience":
         if not speech:
             return speak_and_gather("Me conta rapidinho: você já trabalha com extensões? Qual método usa hoje?",
-                                    abs_url("/resposta"), call_sid=call_sid)
+                                    abs_url("/resposta"))
         data["experience"] = speech
         sess["state"] = next_state("ask_experience")
         sess["data"] = data
         save_session(call_sid, sess)
-        confirm = f"Entendi: {speech}. Confere?"
-        return speak_and_gather(f"{confirm} {ask_instagram()}", abs_url("/resposta"), call_sid=call_sid)
+        return speak_and_gather(ask_instagram(), abs_url("/resposta"))
 
     elif state == "ask_instagram":
         if not speech:
             return speak_and_gather("Passa o arroba do Instagram do salão ou o seu, por favor.",
-                                    abs_url("/resposta"), call_sid=call_sid)
-        ig = looks_like_instagram(speech)
-        data["instagram"] = ig
+                                    abs_url("/resposta"))
+        data["instagram"] = looks_like_instagram(speech)
         sess["state"] = next_state("ask_instagram")
         sess["data"] = data
         save_session(call_sid, sess)
-        confirm = f"Anotei o {ig}, né?"
-        return speak_and_gather(f"{confirm} {ask_whatsapp()}", abs_url("/resposta"), call_sid=call_sid)
+        return speak_and_gather(ask_whatsapp(), abs_url("/resposta"))
 
     elif state == "ask_whatsapp":
         consent = None
@@ -424,28 +436,38 @@ def resposta():
         if consent is None:
             return speak_and_gather("Só pra confirmar: posso pedir para a equipe te chamar no WhatsApp? "
                                     "Diga 'sim' ou 'não'. (1 para sim, 2 para não)",
-                                    abs_url("/resposta"), call_sid=call_sid)
+                                    abs_url("/resposta"))
 
         data["wa_consent"] = consent
         sess["state"] = next_state("ask_whatsapp")
         sess["data"] = data
         save_session(call_sid, sess)
 
-        if consent:
-            confirm = "Perfeito! Vou pedir sim pra equipe te chamar no WhatsApp."
-        else:
-            confirm = "Sem problemas! Não vou acionar o WhatsApp agora."
+        if consent and WHATSAPP_AUTOSEND and TWILIO_WHATSAPP_FROM:
+            try:
+                to_number = request.form.get("From", "")
+                if to_number and not to_number.startswith("whatsapp:"):
+                    to_number = "whatsapp:" + to_number
+                msg = ("Oiê! Aqui é a Pat Glam 💖 Amei nosso papo. "
+                       "Já separei catálogo e infos da Masterclass pra te mandar com glitter! ✨")
+                twilio_client.messages.create(from_=TWILIO_WHATSAPP_FROM, to=to_number, body=msg)
+                sess["wa_sent"] = True
+                save_session(call_sid, sess)
+                append_conv(call_sid, "assistant", "WhatsApp enviado ao final da ligação.")
+            except Exception as e:
+                print(f"[WA ERROR] {e}")
 
-        msg = f"{confirm} {wrap_up(data)}"
+        # concluir
+        msg = wrap_up(data)
         append_conv(call_sid, "assistant", msg)
         resp = VoiceResponse()
-        resp.say(ssml_pat(glam_tone(msg)), language="pt-BR")
-
+        resp.say(ssml_pat(glam_tone(msg)), language="pt-BR", voice="pt-BR-Chirp3-HD-Aoede", voice="pt-BR-Chirp3-HD-Aoede")
+        # opcional: uma última coleta curta
         gather = Gather(
             input="speech dtmf",
             action=abs_url("/wrap_followup"),
             method="POST",
-            language="pt-BR",
+            language="pt-BR", voice="pt-BR-Chirp3-HD-Aoede",
             timeout=6,
             speech_timeout="auto",
             speech_model="phone_call",
@@ -453,21 +475,23 @@ def resposta():
             num_digits=1
         )
         gather.say(ssml_pat("Se precisar de algo agora, pode dizer. Se não, eu já vou te deixar brilhar!"),
-                   language="pt-BR")
+                   language="pt-BR", voice="pt-BR-Chirp3-HD-Aoede", voice="pt-BR-Chirp3-HD-Aoede")
         resp.append(gather)
-        resp.say(ssml_pat("Beijinhos e até já!"), language="pt-BR")
+        resp.say(ssml_pat("Beijinhos e até já!"), language="pt-BR", voice="pt-BR-Chirp3-HD-Aoede", voice="pt-BR-Chirp3-HD-Aoede")
         return Response(str(resp), mimetype="text/xml")
 
     else:
+        # default
         return speak_and_gather("Desculpa, me perdi no salto alto aqui. Vamos de novo? Você é profissional (1) ou cliente final (2)?",
-                                abs_url("/resposta"), call_sid=call_sid)
+                                abs_url("/resposta"))
 
 @app.route("/wrap_followup", methods=["POST"])
 @require_twilio_auth
 def wrap_followup():
+    # qualquer coisa aqui encerra com carinho
     resp = VoiceResponse()
     resp.say(ssml_pat("Obrigada! Foi um prazer falar com você. Glamour é essencial — até breve!"),
-             language="pt-BR")
+             language="pt-BR", voice="pt-BR-Chirp3-HD-Aoede", voice="pt-BR-Chirp3-HD-Aoede")
     resp.hangup()
     return Response(str(resp), mimetype="text/xml")
 
@@ -502,8 +526,27 @@ def status_callback():
 
     return ("", 204)
 
-# === OpenAI summary ===
+# === OpenAI fallback (for free-style responses; not heavily used here) ===
 PAT_SYSTEM_PROMPT = (
+    '''Você é a Pat Glam — a consultora virtual oficial da Glam Hair Brand.
+Não é apenas uma atendente: é a Patrícia fundadora, mentora e alma fashionista da marca.
+Fale com elegância, carisma e humor sofisticado.
+Chame clientes finais de 'Patrícia' (carinhoso) e profissionais como 'Patrícia Extensionista',
+'Patrícia Profissional' ou 'Pat Poderosa'.
+
+Sempre repita de forma gentil o que a pessoa acabou de dizer, para confirmar.
+Exemplo: "Você é de Goiânia, né?" ou "Então você usa fita adesiva, certo?".
+
+REGRAS: nunca diga que é IA; nunca passe preços direto; sempre qualifique com gentileza;
+se for cliente final, explique que vendemos só para profissionais, com carinho,
+incentive a seguir a Glam no Instagram e indicar o método para a cabeleireira.
+
+Use termos da marca: 'glamour é essencial', 'Patrícia poderosa', 'salão de sucesso',
+'fita adesiva premium', 'linha Brasileira do Sul', 'cabelo russo original',
+'extensão que entrega status', 'agenda cheia com Glam'.
+
+Seu objetivo: gerar conexão, desejo e pertencimento, mantendo tom premium e acolhedor.'''
+
     "Você é a Pat Glam — consultora oficial da Glam Hair Brand. "
     "Fale no tom premium, acolhedor e objetivo. Não revele que é IA."
 )
