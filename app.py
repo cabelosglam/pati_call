@@ -253,9 +253,12 @@ def plan_turn(user_text: str, sess: dict) -> dict:
             "utterance": user_text or "",
         }, ensure_ascii=False)}
     ]
+    out = None
+    raw = None
     try:
+        # 1) tentativa com JSON mode (model adequado)
         c = openai_client.chat.completions.create(
-            model=OPENAI_MODEL,
+            model=PLANNER_MODEL,
             messages=messages,
             temperature=0.5,
             max_tokens=300,
@@ -264,13 +267,30 @@ def plan_turn(user_text: str, sess: dict) -> dict:
         raw = c.choices[0].message.content or "{}"
         out = json.loads(raw)
     except Exception as e:
-        print(f"[OPENAI PLAN ERROR] {e}")
-        out = {
-            "reply": "Desculpa, deu um micro bug do glitter. Pode repetir?",
-            "extracted": {},
-            "ask_auto": next_auto,
-            "end": False,
-        }
+        print(f"[OPENAI PLAN ERROR#1] {e}")
+        # 2) fallback sem JSON mode, forçando instrução e parseando manualmente
+        try:
+            messages_fallback = messages + [
+                {"role": "system", "content": "Responda ESTRITAMENTE em JSON válido, sem markdown, sem comentários."}
+            ]
+            c2 = openai_client.chat.completions.create(
+                model=PLANNER_MODEL,
+                messages=messages_fallback,
+                temperature=0.5,
+                max_tokens=300,
+            )
+            raw2 = c2.choices[0].message.content or "{}"
+            raw2 = _extract_json(raw2)
+            out = json.loads(raw2)
+        except Exception as e2:
+            print(f"[OPENAI PLAN ERROR#2] {e2}")
+            print(f"[OPENAI PLAN RAW] {raw!r}")
+            out = {
+                "reply": "Desculpa, deu um micro bug do glitter. Pode repetir?",
+                "extracted": {},
+                "ask_auto": next_auto,
+                "end": False,
+            }
 
     # Merge extracted slots
     ext = out.get("extracted") or {}
@@ -292,7 +312,6 @@ def plan_turn(user_text: str, sess: dict) -> dict:
         "reply": out.get("reply") or (asked or next_auto) or "Pode me contar mais?",
         "end": bool(out.get("end")),
     }
-
 # === Simple NLU helpers ===
 def is_yes(text: str) -> bool:
     t = (text or "").strip().lower()
