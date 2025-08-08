@@ -4,6 +4,7 @@ import json
 import smtplib
 from email.mime.text import MIMEText
 from functools import wraps
+from typing import Dict, Any
 
 from flask import Flask, request, render_template, Response, abort
 from twilio.rest import Client
@@ -28,12 +29,13 @@ PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/")
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
 TWILIO_FROM_NUMBER = os.environ.get("TWILIO_FROM_NUMBER")
-TWILIO_WHATSAPP_FROM = os.environ.get("TWILIO_WHATSAPP_FROM")  # e.g., whatsapp:+14155238886
-TWILIO_WHATSAPP_TO = os.environ.get("TWILIO_WHATSAPP_TO")      # e.g., whatsapp:+55XXXXXXXXXXX
+TWILIO_WHATSAPP_FROM = os.environ.get("TWILIO_WHATSAPP_FROM")  # whatsapp:+14155238886
+TWILIO_WHATSAPP_TO = os.environ.get("TWILIO_WHATSAPP_TO")      # whatsapp:+55XXXXXXXXXXX
 TWILIO_VALIDATE_SIGNATURE = os.environ.get("TWILIO_VALIDATE_SIGNATURE", "true").lower() == "true"
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
-OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o")
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o")  # set to a model you have access to
+USE_GPT_TONE = os.environ.get("USE_GPT_TONE", "true").lower() == "true"
 
 EMAIL_HOST = os.environ.get("EMAIL_HOST")
 EMAIL_PORT = int(os.environ.get("EMAIL_PORT", "587"))
@@ -46,18 +48,21 @@ REDIS_URL = os.environ.get("REDIS_URL", "")
 
 # === HELPERS ===
 def abs_url(path: str) -> str:
-    """Build absolute URL for Twilio callbacks."""
     if not PUBLIC_BASE_URL:
-        # Warn in console; Twilio won't be able to reach localhost
-        print("[WARN] PUBLIC_BASE_URL not set. Twilio won't reach your local server. "
-              "Set PUBLIC_BASE_URL to your ngrok/Render domain.")
-        return path  # may break for Twilio; kept for local dev
+        print("[WARN] PUBLIC_BASE_URL not set. Twilio won't reach your local server. Set PUBLIC_BASE_URL to your ngrok/Render domain.")
+        return path
     if not path.startswith("/"):
         path = "/" + path
     return f"{PUBLIC_BASE_URL}{path}"
 
 USE_MEMORY = False
 _memory = {}
+
+def _mem_set(key, value):
+    _memory[key] = value
+
+def _mem_get(key):
+    return _memory.get(key)
 
 def _mem_rpush(key, value):
     _memory.setdefault(key, [])
@@ -75,7 +80,7 @@ def _mem_delete(key):
 if not REDIS_URL or REDIS_URL.startswith("memory://") or redis is None:
     USE_MEMORY = True
     r = None
-    print("[STORE] Using in-memory conversation store.")
+    print("[STORE] Using in-memory store.")
 else:
     r = redis.from_url(REDIS_URL, decode_responses=True)
     print(f"[STORE] Using Redis at {REDIS_URL}")
@@ -87,6 +92,9 @@ openai_client = OpenAI(api_key=OPENAI_API_KEY)
 # === Conversation helpers ===
 def conv_key(call_sid: str) -> str:
     return f"conv:{call_sid}"
+
+def state_key(call_sid: str) -> str:
+    return f"state:{call_sid}"
 
 def append_conv(call_sid: str, role: str, content: str) -> None:
     payload = json.dumps({"role": role, "content": content})
@@ -113,25 +121,45 @@ def clear_conv(call_sid: str) -> None:
     try:
         if USE_MEMORY:
             _mem_delete(conv_key(call_sid))
+            _mem_delete(state_key(call_sid))
         else:
             r.delete(conv_key(call_sid))
+            r.delete(state_key(call_sid))
     except Exception as e:
         print(f"[STORE ERROR] clear_conv: {e}")
 
-# === Prompt ===
+def get_state(call_sid: str) -> Dict[str, Any]:
+    try:
+        if USE_MEMORY:
+            state = _mem_get(state_key(call_sid))
+        else:
+            state_json = r.get(state_key(call_sid))
+            state = json.loads(state_json) if state_json else None
+        if not state:
+            state = {"stage": "classify_role", "role": None, "city": None, "experience": None, "instagram": None, "whatsapp_ok": None}
+            set_state(call_sid, state)
+        return state
+    except Exception as e:
+        print(f"[STORE ERROR] get_state: {e}")
+        return {"stage": "classify_role", "role": None, "city": None, "experience": None, "instagram": None, "whatsapp_ok": None}
+
+def set_state(call_sid: str, state: Dict[str, Any]) -> None:
+    try:
+        if USE_MEMORY:
+            _mem_set(state_key(call_sid), state)
+        else:
+            r.set(state_key(call_sid), json.dumps(state))
+    except Exception as e:
+        print(f"[STORE ERROR] set_state: {e}")
+
+# === Prompt base ===
 PAT_SYSTEM_PROMPT = (
     "Você é a Pat Glam — a consultora virtual oficial da Glam Hair Brand. "
-    "Não é apenas uma atendente: é a Patrícia fundadora, mentora e alma fashionista da marca. "
     "Fale com elegância, carisma e humor sofisticado. "
-    "Chame clientes finais de 'Patrícia' (carinhoso) e profissionais como 'Patrícia Extensionista', "
-    "'Patrícia Profissional' ou 'Pat Poderosa'. "
-    "REGRAS: nunca diga que é IA; nunca passe preços direto; sempre qualifique com gentileza; "
-    "se for cliente final, explique que vendemos só para profissionais, com carinho, "
-    "incentive a seguir a Glam no Instagram e indicar o método para a cabeleireira. "
+    "Nunca diga que é IA; nunca passe preços direto; sempre qualifique com gentileza. "
     "Use termos da marca: 'glamour é essencial', 'Patrícia poderosa', 'salão de sucesso', "
     "'fita adesiva premium', 'linha Brasileira do Sul', 'cabelo russo original', "
-    "'extensão que entrega status', 'agenda cheia com Glam'. "
-    "Seu objetivo: gerar conexão, desejo e pertencimento, mantendo tom premium e acolhedor."
+    "'extensão que entrega status', 'agenda cheia com Glam'."
 )
 
 # === Signature validation ===
@@ -142,20 +170,114 @@ def require_twilio_auth(f):
             return f(*args, **kwargs)
         if not TWILIO_AUTH_TOKEN:
             return f(*args, **kwargs)
-
         validator = RequestValidator(TWILIO_AUTH_TOKEN)
         signature = request.headers.get("X-Twilio-Signature", "")
         forwarded_proto = request.headers.get("X-Forwarded-Proto", "")
         url = request.url
         if forwarded_proto and url.startswith("http://"):
             url = url.replace("http://", f"{forwarded_proto}://", 1)
-
         form = request.form.to_dict(flat=True)
         if not validator.validate(url, form, signature):
             print(f"[AUTH] Invalid Twilio signature for {url}")
             return abort(403, description="Invalid Twilio signature.")
         return f(*args, **kwargs)
     return wrapper
+
+# === NLU helpers ===
+def norm(s: str) -> str:
+    return (s or "").lower().strip()
+
+def detect_role(text: str, digits: str):
+    t = norm(text)
+    if digits == "1" or "prof" in t or "cabele" in t:
+        return "professional"
+    if digits == "2" or "cliente" in t or "final" in t:
+        return "consumer"
+    return None
+
+# === Stage engine ===
+def next_prompt(call_sid: str, user_text: str, digits: str) -> str:
+    state = get_state(call_sid)
+    stage = state.get("stage")
+
+    if stage == "classify_role":
+        role = detect_role(user_text, digits)
+        if role == "professional":
+            state["role"] = "professional"
+            state["stage"] = "ask_city"
+            set_state(call_sid, state)
+            return "Amei saber! Você atende em qual cidade, Patrícia Extensionista?"
+        elif role == "consumer":
+            state["role"] = "consumer"
+            state["stage"] = "final_msg"
+            set_state(call_sid, state)
+            return ("Você é uma Patrícia Final exigente, eu amo! Vendemos só para profissionais habilitados, "
+                    "mas posso te ajudar: indique nosso método para a sua cabeleireira e peça para falar com a Glam. "
+                    "Quer que eu envie um guia para você mostrar pra ela?")
+        else:
+            return "Só para eu te atender direitinho: você é profissional da beleza (aperte 1) ou é cliente final (aperte 2)?"
+    elif stage == "ask_city":
+        state["city"] = user_text.strip() or state.get("city")
+        state["stage"] = "ask_experience"
+        set_state(call_sid, state)
+        return "Perfeito! E você já trabalha com extensões? Qual método usa hoje no salão?"
+    elif stage == "ask_experience":
+        state["experience"] = user_text.strip() or state.get("experience")
+        state["stage"] = "ask_instagram"
+        set_state(call_sid, state)
+        return "Maravilha. Me passa o @ do Instagram do salão ou o seu, para eu anotar com glitter dourado aqui?"
+    elif stage == "ask_instagram":
+        state["instagram"] = user_text.strip() or state.get("instagram")
+        state["stage"] = "ask_whatsapp"
+        set_state(call_sid, state)
+        return "Quer que nossa equipe te chame no WhatsApp para credenciar e te enviar o catálogo e agenda da Masterclass? Diga 'sim' ou 'não'."
+    elif stage == "ask_whatsapp":
+        t = norm(user_text)
+        state["whatsapp_ok"] = True if ("sim" in t or t in ("s","ss","pode")) else False if ("não" in t or "nao" in t or t=="n") else None
+        # Finaliza
+        state["stage"] = "wrap"
+        set_state(call_sid, state)
+        if state["whatsapp_ok"] is True:
+            return "Feito, Patrícia poderosa! Já pedindo para a equipe te chamar no WhatsApp. Glamour é essencial — nos vemos em breve!"
+        elif state["whatsapp_ok"] is False:
+            return "Sem problemas! Vou te mandar um resumo por e-mail com os próximos passos. Conta comigo sempre!"
+        else:
+            return "Perfeito. Se preferir, posso chamar no WhatsApp depois. Posso te ajudar em mais alguma coisa agora?"
+    elif stage == "final_msg":
+        # Consumidora final — encerrar com orientação gentil
+        state["stage"] = "wrap"
+        set_state(call_sid, state)
+        return ("Combinado! Segue a Glam no Instagram e mostra para a sua cabeleireira o método de fita adesiva premium. "
+                "Quando ela falar com a gente, eu cuido do resto. Beijos da Pat Glam!")
+    else:
+        # wrap / default
+        return "Anotado! Posso te ajudar em mais alguma coisa?"
+
+def style_with_gpt(base_text: str, state: Dict[str, Any]) -> str:
+    if not USE_GPT_TONE:
+        return base_text
+    try:
+        # Compose a short style prompt using known slots
+        persona = (
+            "Adapte o texto a seguir para o tom da Pat Glam (premium, acolhedor, charmoso), "
+            "mantendo a pergunta final clara e objetiva. Se houver cidade/instagram/método, cite com naturalidade."
+        )
+        slots = {k: v for k, v in state.items() if v}
+        messages = [
+            {"role": "system", "content": PAT_SYSTEM_PROMPT},
+            {"role": "user", "content": f"{persona}\n\nSlots: {json.dumps(slots, ensure_ascii=False)}\n\nTexto base: {base_text}"}
+        ]
+        completion = openai_client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=messages,
+            temperature=0.6,
+            max_tokens=160,
+        )
+        out = (completion.choices[0].message.content or "").strip()
+        return out or base_text
+    except Exception as e:
+        print(f"[OPENAI TONE ERROR] {e}")
+        return base_text
 
 # === Routes ===
 
@@ -182,21 +304,15 @@ def home():
 @app.route("/voice", methods=["GET", "POST"])
 @require_twilio_auth
 def voice():
-    """Greeting + first gather. Uses Google TTS default (set in Console)."""
     resp = VoiceResponse()
-
-    # Use SSML for pronouncing "Pat Glam" as "Pati Glam"
-    ssml = (
-        '<speak>Oiê! Aqui é a <sub alias="Pati Glam">Pat Glam</sub>, da Glam Hair Brand. '
-        'Me conta: você é profissional da beleza ou quer aprender nosso método de fita adesiva premium?</speak>'
-    )
-
+    ssml = ('<speak>Oiê! Aqui é a <sub alias="Pati Glam">Pat Glam</sub>, da Glam Hair Brand. '
+            'Me conta: você é profissional da beleza (aperte 1) ou é cliente final (aperte 2)?</speak>')
     gather = Gather(
         input="speech dtmf",
         action=abs_url("/resposta"),
         method="POST",
         language="pt-BR",
-        hints="fita adesiva, extensão, curso, comprar, preço, salão, Goiânia, Brasileira do Sul, cabelo russo, Glam",
+        hints="profissional, cliente final, cabeleireiro, extensão, curso, comprar, preço, salão",
         timeout=8,
         speech_timeout="auto",
         speech_model="phone_call",
@@ -204,7 +320,7 @@ def voice():
         partial_results=True,
         partial_result_callback=abs_url("/partial"),
         partial_result_callback_method="POST",
-        num_digits=1,  # for DTMF fallback
+        num_digits=1,
     )
     gather.say(ssml, language="pt-BR")
     resp.append(gather)
@@ -228,10 +344,23 @@ def resposta():
 
     print(f"[DEBUG] CallSid={call_sid} | SpeechResult={speech!r} | Confidence={confidence} | Digits={digits!r}")
 
-    resposta_pat = gerar_resposta_gpt(speech, call_sid)
+    # Orchestrate stage-based flow
+    base_reply = next_prompt(call_sid, speech, digits)
 
-    # Echo back what we think we heard (helps validate ASR)
+    # Try to style with GPT (optional). If it fails, keep base text.
+    state = get_state(call_sid)
+    reply = style_with_gpt(base_reply, state)
+
+    # Store turns
+    append_conv(call_sid, "user", speech)
+    append_conv(call_sid, "assistant", reply)
+
+    # Echo what we heard (escaped) + the reply
     eco = f"Eu ouvi: {speech or 'nada'}."
+    safe_text = eco + " " + reply
+    # Escape for SSML safety
+    from xml.sax.saxutils import escape as _esc
+    safe_text = _esc(safe_text)
 
     resp = VoiceResponse()
     gather = Gather(
@@ -239,7 +368,7 @@ def resposta():
         action=abs_url("/resposta"),
         method="POST",
         language="pt-BR",
-        hints="fita adesiva, extensão, curso, comprar, preço, salão, Goiânia, Brasileira do Sul, cabelo russo, Glam",
+        hints="cidade, experiência, instagram, whatsapp, extensão, curso, comprar, preço, salão",
         timeout=8,
         speech_timeout="auto",
         speech_model="phone_call",
@@ -249,7 +378,7 @@ def resposta():
         partial_result_callback_method="POST",
         num_digits=1,
     )
-    gather.say(f"<speak>{eco} {resposta_pat}</speak>", language="pt-BR")
+    gather.say(f"<speak>{safe_text}</speak>", language="pt-BR")
     resp.append(gather)
 
     resp.say("Acho que não entendi bem agora. Podemos continuar em outro momento. Beijinhos!", language="pt-BR")
@@ -258,7 +387,6 @@ def resposta():
 @app.route("/partial", methods=["POST"])
 def partial():
     call_sid = request.form.get("CallSid", "unknown")
-    # Log every field to help debug STT
     data = {k: v for k, v in request.form.items()}
     print(f"[PARTIAL] CallSid={call_sid} data={data}")
     return ("", 204)
@@ -288,42 +416,6 @@ def status_callback():
             print(f"[CALL] {call_sid} finalizada. Memória limpa.")
 
     return ("", 204)
-
-def gerar_resposta_gpt(fala_cliente: str, call_sid: str) -> str:
-    try:
-        if not fala_cliente.strip():
-            return "Hmmm, não consegui te ouvir. Pode repetir, por favor?"
-
-        history = get_conv(call_sid)[-6:]
-        messages = [{"role": "system", "content": PAT_SYSTEM_PROMPT}]
-        messages.extend(history)
-        messages.append({"role": "user", "content": f"Pessoa disse: {fala_cliente}"})
-
-        try:
-            completion = openai_client.chat.completions.create(
-                model=OPENAI_MODEL,
-                messages=messages,
-                temperature=0.7,
-                max_tokens=180,
-            )
-        except Exception as e1:
-            print(f"[OPENAI WARN] Falha com modelo {OPENAI_MODEL}: {e1}. Tentando fallback gpt-4o.")
-            completion = openai_client.chat.completions.create(
-                model="gpt-4o",
-                messages=messages,
-                temperature=0.7,
-                max_tokens=180,
-            )
-
-        resposta = (completion.choices[0].message.content or "").strip()
-
-        append_conv(call_sid, "user", fala_cliente)
-        append_conv(call_sid, "assistant", resposta)
-
-        return resposta or "Perdão, deu uma travadinha aqui. Pode repetir?"
-    except Exception as e:
-        print(f"[OPENAI ERROR] {e}")
-        return "Desculpa, tive um pequeno deslize técnico. Pode repetir pra mim, por favor?"
 
 def summarize_history(history, call_sid: str, duration: str, from_number: str, to_number: str) -> str:
     try:
@@ -366,7 +458,6 @@ Conversa:
         return summary or f"CallSid: {call_sid}\n(Conversa vazia para resumir)"
     except Exception as e:
         print(f"[OPENAI SUMMARY ERROR] {e}")
-        # Fallback: send raw transcript if available
         raw = "\n".join([f"{m.get('role')}: {m.get('content')}" for m in history]) or "(sem histórico)"
         return f"CallSid: {call_sid}\nResumo indisponível (erro ao gerar).\n\nTranscrição bruta:\n{raw}"
 
