@@ -19,7 +19,7 @@ try:
 except Exception:
     redis = None
 
-load_dotenv()
+load_dotenv(override=True)
 
 app = Flask(__name__)
 app.config["PREFERRED_URL_SCHEME"] = "https"
@@ -37,13 +37,13 @@ def ssml_pat(text: str) -> str:
 '''.strip()
 
 # === ENV ===
-PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/")
+PUBLIC_BASE_URL = (os.environ.get("PUBLIC_BASE_URL", "") or "").strip().split()[0].rstrip("/")
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
 TWILIO_FROM_NUMBER = os.environ.get("TWILIO_FROM_NUMBER")
 TWILIO_VALIDATE_SIGNATURE = os.environ.get("TWILIO_VALIDATE_SIGNATURE", "true").lower() == "true"
 
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+OPENAI_API_KEY = (os.environ.get("OPENAI_API_KEY") or "").strip()
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o")
 USE_GPT_TONE = os.environ.get("USE_GPT_TONE", "true").lower() == "true"
 PLANNER_MODEL = os.environ.get("PLANNER_MODEL", "gpt-4o-mini")
@@ -51,7 +51,7 @@ PLANNER_MODEL = os.environ.get("PLANNER_MODEL", "gpt-4o-mini")
 EMAIL_HOST = os.environ.get("EMAIL_HOST")
 EMAIL_PORT = int(os.environ.get("EMAIL_PORT", "587"))
 EMAIL_USER = os.environ.get("EMAIL_USER")
-EMAIL_PASS = os.environ.get("EMAIL_PASS")
+EMAIL_PASS = (os.environ.get("EMAIL_PASS") or "").strip()
 EMAIL_FROM = os.environ.get("EMAIL_FROM", EMAIL_USER or "")
 EMAIL_TO = os.environ.get("EMAIL_TO", "cabelosglam@gmail.com")
 
@@ -103,7 +103,19 @@ else:
 # === Clients ===
 twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
-print(f"[OPENAI] planner={PLANNER_MODEL} | tone={OPENAI_MODEL} | tone_enabled={USE_GPT_TONE}")
+
+# quick ping to detect key validity at boot
+OPENAI_OK = True
+try:
+    _ = openai_client.models.list()
+except Exception as _e:
+    OPENAI_OK = False
+
+def _mask(k: str) -> str:
+    if not k:
+        return "<empty>"
+    return f"{k[:8]}...{k[-4:]}"
+print(f"[OPENAI] planner={PLANNER_MODEL} | tone={OPENAI_MODEL} | tone_enabled={USE_GPT_TONE} | key={_mask(OPENAI_API_KEY)} | ok={OPENAI_OK}")
 
 # === Conversation + Session helpers ===
 def conv_key(call_sid: str) -> str:
@@ -260,6 +272,11 @@ def plan_turn(user_text: str, sess: dict) -> dict:
     # Decide se ainda cabe uma pergunta automática
     next_auto = AUTO_QUESTIONS[auto_index] if auto_index < len(AUTO_QUESTIONS) else None
 
+    # Fast path: sem LLM disponível, segue script suave
+    if not OPENAI_OK:
+        reply = (next_auto or "Pode me contar um pouco sobre seu salão?")
+        return {"reply": reply, "end": False}
+
     messages = [
         {"role": "system", "content": PLANNER_SYSTEM},
         {"role": "user", "content": json.dumps({
@@ -302,7 +319,7 @@ def plan_turn(user_text: str, sess: dict) -> dict:
             print(f"[OPENAI PLAN ERROR#2] {e2}")
             print(f"[OPENAI PLAN RAW] {raw!r}")
             out = {
-                "reply": "Desculpa, deu um micro bug do glitter. Pode repetir?",
+                "reply": (next_auto or "Pode me contar mais?"),
                 "extracted": {},
                 "ask_auto": next_auto,
                 "end": False,
@@ -557,6 +574,25 @@ def send_summary(markdown_text: str) -> None:
         server.login(EMAIL_USER, EMAIL_PASS)
         server.send_message(msg)
         print(f"[EMAIL] Resumo enviado para {EMAIL_TO}")
+
+# === Diagnostics ===
+@app.get("/diag")
+def diag():
+    info = {
+        "public_base_url": PUBLIC_BASE_URL,
+        "planner_model": PLANNER_MODEL,
+        "tone_model": OPENAI_MODEL,
+        "tone_enabled": USE_GPT_TONE,
+        "openai_key_mask": _mask(OPENAI_API_KEY),
+    }
+    try:
+        # ping leve
+        _ = openai_client.models.list()
+        info["openai_ok"] = True
+    except Exception as e:
+        info["openai_ok"] = False
+        info["error"] = str(e)
+    return info, 200
 
 # === Healthcheck ===
 @app.get("/healthz")
